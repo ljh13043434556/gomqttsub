@@ -10,34 +10,56 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/aWildProgrammer/fconf"
 	"github.com/eclipse/paho.mqtt.golang"
 )
 
-const theme = "lizonggezigui/accept"                                               //订阅主题
-const mqtt_server = "123.207.127.201"                                              //mqtt服务器地址
-const mqtt_client_id = "beck_accept"                                               //mqtt客户端ID
-const mqtt_user = "beck"                                                           //mqtt帐号
-const mqtt_pass = "123456"                                                         //mqtt密码
-const php_server = "http://lzsmgzg.app.xiaozhuschool.com/wxsite/device_notify/api" //接收数据的php接口
+var theme = ""          //订阅主题
+var mqtt_server = ""    //mqtt服务器地址
+var mqtt_client_id = "" //mqtt客户端ID
+var mqtt_user = ""      //mqtt帐号
+var mqtt_pass = ""      //mqtt密码
+var php_server = ""     //接收数据的php接口
+var save_type = ""      //mqtt接收到数据的处理方法
 
 var c mqtt.Client                  //mqtt 客户端
 var urlCh = make(chan string)      //入接收到的内容放入这个通道 中
 var taskCh = make(chan string, 50) //把进行中的POST操作放入这个通道中，用于控制并发数，100就是最多100个POST操作同时进行
 
 func main() {
-	if os.Getppid() != 1 {
-		//判断当其是否是子进程，当父进程return之后，子进程会被 系统1 号进程接管
-		filePath, _ := filepath.Abs(os.Args[0])
-		//将命令行参数中执行文件路径转换成可用路径
-		cmd := exec.Command(filePath)
-		//将其他命令传入生成出的进程
-		cmd.Stdin = os.Stdin
-		//给新进程设置文件描述符，可以重定向到文件中
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		//开始执行新进程，不等待新进程退出
-		cmd.Start()
+
+	c, err := fconf.NewFileConf("./config.ini")
+	if err != nil {
+		fmt.Println(err)
 		return
+	}
+
+	theme = c.String("mqtt.theme")
+	mqtt_server = c.String("mqtt.mqtt_server")
+	mqtt_client_id = c.String("mqtt.mqtt_client_id")
+	mqtt_user = c.String("mqtt.mqtt_user")
+	mqtt_pass = c.String("mqtt.mqtt_pass")
+
+	php_server = c.String("savePath.php_server")
+	save_type = c.String("savePath.type")
+
+	var daemonCnf string = c.String("runcnf.daemon")
+
+	if daemonCnf == "1" {
+		if os.Getppid() != 1 {
+			//判断当其是否是子进程，当父进程return之后，子进程会被 系统1 号进程接管
+			filePath, _ := filepath.Abs(os.Args[0])
+			//将命令行参数中执行文件路径转换成可用路径
+			cmd := exec.Command(filePath)
+			//将其他命令传入生成出的进程
+			cmd.Stdin = os.Stdin
+			//给新进程设置文件描述符，可以重定向到文件中
+			cmd.Stdout = os.Stdout
+			cmd.Stderr = os.Stderr
+			//开始执行新进程，不等待新进程退出
+			cmd.Start()
+			return
+		}
 	}
 
 	//初始化客户端，没有链接的话一直链接，直到链接成功为为止
@@ -50,7 +72,7 @@ func main() {
 		time.Sleep(time.Duration(2) * time.Second)
 	}
 	fmt.Println("断开链接")
-	c.Disconnect(250)
+	//c.Disconnect(250)
 
 }
 
@@ -78,7 +100,7 @@ func subscribe() bool {
 		urlCh <- payload
 	}
 	//订阅主题
-	if token := c.Subscribe(theme, 0, f); token.Wait() && token.Error() != nil {
+	if token := c.Subscribe(theme, 1, f); token.Wait() && token.Error() != nil {
 		fmt.Println("订阅失败", token.Error()) //订阅失败
 		return false
 	} else {
@@ -97,6 +119,7 @@ func mqttConnect() bool {
 	opts.SetAutoReconnect(true)                        //这个好像是自动链接
 	opts.SetMaxReconnectInterval(time.Duration(1) * time.Second)
 	opts.SetUsername(mqtt_user)
+	opts.SetCleanSession(false)
 	opts.SetPassword(mqtt_pass)
 
 	//链接断开后的事件
@@ -126,8 +149,10 @@ func loop_() {
 
 		//控制并发
 		taskCh <- data
+		if save_type == "php" {
+			go httpPost(php_server, data)
+		}
 
-		go httpPost(php_server, data)
 	}
 }
 
@@ -138,7 +163,7 @@ func httpPost(url_ string, data string) {
 	if err != nil {
 		fmt.Println("post error: " + data)
 	}
-	fmt.Println("post ok: " + data)
+	fmt.Println("post ok: ", url_, data)
 
 	var _ string = <-taskCh
 }
